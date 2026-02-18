@@ -1,0 +1,203 @@
+/* ── Base ─────────────────────────────────────────────────────── */
+body {
+  background-color: #0f172a;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* ── Cards ────────────────────────────────────────────────────── */
+.card {
+  background-color: #1e293b;
+  border-color: #334155;
+  border-radius: 0.75rem;
+}
+
+.card-header {
+  background-color: #1e293b;
+  border-bottom-color: #334155;
+  padding: 0.85rem 1.25rem;
+}
+
+/* ── Stat cards ───────────────────────────────────────────────── */
+.stat-card {
+  border-width: 1px;
+  border-left-width: 4px !important;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.stat-label {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-top: 0.25rem;
+}
+
+/* ── Impact badges ────────────────────────────────────────────── */
+.impact-badge,
+.badge.impact-high,
+.badge.impact-medium,
+.badge.impact-low {
+  font-size: 0.7rem;
+  padding: 0.25em 0.6em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 0.375rem;
+}
+
+.impact-high   { background-color: #7f1d1d; color: #fca5a5; }
+.impact-medium { background-color: #7c2d12; color: #fdba74; }
+.impact-low    { background-color: #713f12; color: #fde68a; }
+
+/* ── Event list ───────────────────────────────────────────────── */
+.event-date-header {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #94a3b8;
+  background-color: #1e293b;
+  border-bottom: 1px solid #334155;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.event-row {
+  border-bottom: 1px solid #1e293b;
+  transition: background 0.15s;
+  font-size: 0.88rem;
+}
+
+.event-row:hover {
+  background-color: #273449;
+}
+
+.event-row.event-high {
+  border-left: 3px solid #ef4444;
+}
+
+.event-row.event-medium {
+  border-left: 3px solid #f97316;
+}
+
+.event-row.event-low {
+  border-left: 3px solid #eab308;
+}
+
+.event-time {
+  font-family: monospace;
+  font-size: 0.8rem;
+  min-width: 5rem;
+}
+
+/* ── Legend dots ──────────────────────────────────────────────── */
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+/* ── Indicator list ───────────────────────────────────────────── */
+.indicator-list .list-group-item {
+  background-color: #1e293b;
+  border-color: #334155;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.indicator-list .list-group-item:hover {
+  background-color: #273449;
+}
+
+.indicator-list .list-group-item.active {
+  background-color: #1d4ed8 !important;
+  border-color: #1d4ed8 !important;
+  color: #fff;
+}
+
+/* ── FullCalendar dark overrides ──────────────────────────────── */
+:root {
+  --fc-border-color: #334155;
+  --fc-button-bg-color: #1e293b;
+  --fc-button-border-color: #334155;
+  --fc-button-text-color: #e2e8f0;
+  --fc-button-hover-bg-color: #273449;
+  --fc-button-hover-border-color: #3b82f6;
+  --fc-button-active-bg-color: #1d4ed8;
+  --fc-today-bg-color: rgba(59,130,246,0.12);
+  --fc-neutral-bg-color: #1e293b;
+  --fc-page-bg-color: #1e293b;
+  --fc-neutral-text-color: #94a3b8;
+  --fc-list-event-hover-bg-color: #273449;
+}
+
+.fc {
+  color: #e2e8f0;
+}
+
+.fc-theme-bootstrap5 .fc-button {
+  font-size: 0.82rem;
+}
+
+.fc .fc-daygrid-day-number,
+.fc .fc-col-header-cell-cushion {
+  color: #e2e8f0;
+  text-decoration: none;
+}
+
+.fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
+  background-color: #1d4ed8;
+  border-radius: 50%;
+  padding: 2px 6px;
+  color: #fff;
+}
+
+/* ── Tables ───────────────────────────────────────────────────── */
+.table {
+  color: #e2e8f0;
+}
+
+.table thead th {
+  color: #94a3b8;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom-color: #334155;
+}
+
+.table > :not(caption) > * > * {
+  background-color: transparent;
+  border-bottom-color: #334155;
+}
+
+.table-hover > tbody > tr:hover > * {
+  background-color: #273449;
+}
+
+/* ── Alerts ───────────────────────────────────────────────────── */
+.alert-info {
+  background-color: rgba(14,165,233,0.1);
+  border-color: rgba(14,165,233,0.3);
+  color: #7dd3fc;
+}
+
+/* ── Navbar ───────────────────────────────────────────────────── */
+.navbar-brand {
+  font-size: 1.1rem;
+}
+
+.nav-link {
+  font-size: 0.9rem;
+}
+
+/* ── Misc ─────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 6px; }
+::-webkit-scrollbar-track  { background: #1e293b; }
+::-webkit-scrollbar-thumb  { background: #475569; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }

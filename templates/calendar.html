@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Calendar — EconCal{% endblock %}
+
+{% block head %}
+<!-- FullCalendar v6 -->
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.13/index.global.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.13/index.global.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <h1 class="h3 mb-0 fw-bold">
+    <i class="fa-solid fa-calendar-days me-2 text-primary"></i>Event Calendar
+  </h1>
+  <small class="text-secondary">Click any event for details</small>
+</div>
+
+<!-- Filter bar -->
+<div class="card mb-4">
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap gap-3 align-items-center">
+      <span class="text-secondary small fw-semibold text-uppercase">Country</span>
+      {% for code, info in country_map.items() %}
+      <div class="form-check form-check-inline mb-0">
+        <input class="form-check-input filter-country" type="checkbox"
+               id="chk{{ code }}" value="{{ code }}" checked />
+        <label class="form-check-label" for="chk{{ code }}">
+          {{ info.flag }} {{ info.name }}
+        </label>
+      </div>
+      {% endfor %}
+
+      <div class="vr mx-2"></div>
+
+      <span class="text-secondary small fw-semibold text-uppercase">Impact</span>
+      {% for impact, color in impact_colors.items() %}
+      <div class="form-check form-check-inline mb-0">
+        <input class="form-check-input filter-impact" type="checkbox"
+               id="chkImp{{ impact }}" value="{{ impact }}" checked />
+        <label class="form-check-label" for="chkImp{{ impact }}">
+          <span class="legend-dot" style="background:{{ color }}"></span> {{ impact }}
+        </label>
+      </div>
+      {% endfor %}
+
+      <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="refreshCalendar()">
+        <i class="fa-solid fa-arrows-rotate me-1"></i>Reload
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Calendar container -->
+<div class="card">
+  <div class="card-body">
+    <div id="calendar"></div>
+  </div>
+</div>
+
+<!-- Event detail modal -->
+<div class="modal fade" id="eventModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalTitle">Event Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <table class="table table-sm mb-0">
+          <tbody id="modalBody"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <a id="modalAnalysisLink" href="#" class="btn btn-sm btn-outline-primary">
+          <i class="fa-solid fa-magnifying-glass-chart me-1"></i>View Analysis
+        </a>
+        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let calendar;
+
+function getFilters() {
+  const countries = [...document.querySelectorAll('.filter-country:checked')].map(el => el.value);
+  const impacts   = [...document.querySelectorAll('.filter-impact:checked')].map(el => el.value);
+  return { countries, impacts };
+}
+
+function buildEventSource(start, end, successCallback, failureCallback) {
+  const { countries, impacts } = getFilters();
+  const params = new URLSearchParams();
+  if (start) params.append('start', start);
+  if (end)   params.append('end',   end);
+  countries.forEach(c => params.append('country', c));
+  impacts.forEach(i   => params.append('impact',  i));
+
+  fetch(`/api/events?${params}`)
+    .then(r => r.json())
+    .then(successCallback)
+    .catch(failureCallback);
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  const el = document.getElementById('calendar');
+  calendar = new FullCalendar.Calendar(el, {
+    initialView: 'dayGridMonth',
+    headerToolbar: {
+      left:   'prev,next today',
+      center: 'title',
+      right:  'dayGridMonth,timeGridWeek,listMonth',
+    },
+    themeSystem: 'bootstrap5',
+    height: 'auto',
+    eventTimeFormat: { hour: '2-digit', minute: '2-digit', meridiem: false },
+    events: function (fetchInfo, successCallback, failureCallback) {
+      buildEventSource(
+        fetchInfo.startStr, fetchInfo.endStr, successCallback, failureCallback
+      );
+    },
+    eventClick: function (info) {
+      const p = info.event.extendedProps;
+      const title = info.event.title.replace(/^\S+\s/, ''); // strip flag
+      document.getElementById('modalTitle').textContent = title;
+
+      const rows = [
+        ['Country',  `${p.countryName} (${p.country})`],
+        ['Date/Time', info.event.start.toISOString().replace('T', ' ').slice(0, 16) + ' UTC'],
+        ['Impact',   `<span class="badge impact-${p.impact.toLowerCase()}">${p.impact}</span>`],
+        ['Forecast', p.forecast],
+        ['Previous', p.previous],
+        ['Actual',   p.actual ? `<strong class="text-success">${p.actual}</strong>` : '—'],
+      ];
+
+      document.getElementById('modalBody').innerHTML = rows
+        .map(([k, v]) => `<tr><th class="text-secondary">${k}</th><td>${v}</td></tr>`)
+        .join('');
+
+      const analysisTitle = encodeURIComponent(title);
+      const analysisCountry = encodeURIComponent(p.country);
+      document.getElementById('modalAnalysisLink').href =
+        `/analysis?indicator=${analysisTitle}&country=${analysisCountry}`;
+
+      new bootstrap.Modal(document.getElementById('eventModal')).show();
+    },
+  });
+  calendar.render();
+
+  // Re-fetch when filters change
+  document.querySelectorAll('.filter-country, .filter-impact').forEach(el => {
+    el.addEventListener('change', () => calendar.refetchEvents());
+  });
+});
+
+function refreshCalendar() {
+  if (calendar) calendar.refetchEvents();
+}
+</script>
+{% endblock %}

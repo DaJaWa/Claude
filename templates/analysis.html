@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block title %}Analysis — EconCal{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div>
+    <h1 class="h3 mb-0 fw-bold">
+      <i class="fa-solid fa-magnifying-glass-chart me-2 text-primary"></i>
+      Historical Surprise Analysis
+    </h1>
+    <small class="text-secondary">
+      How did the S&amp;P 500 move when an indicator surprised vs. consensus?
+    </small>
+  </div>
+</div>
+
+<!-- Explanation banner -->
+<div class="alert alert-info alert-dismissible fade show mb-4" role="alert">
+  <i class="fa-solid fa-circle-info me-2"></i>
+  <strong>How this works:</strong>
+  When an economic release's <em>actual</em> value differs from the <em>forecast</em>,
+  that's called a <em>surprise</em>. Positive surprises typically lift markets; negative
+  surprises weigh on them — but the relationship varies by indicator.
+  This page shows you the historical scatter for any tracked release.
+  <strong>Data accumulates over time</strong> as ForexFactory publishes actual values.
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+
+<div class="row g-4">
+
+  <!-- Indicator selector -->
+  <div class="col-12 col-lg-4">
+    <div class="card">
+      <div class="card-header fw-semibold">
+        <i class="fa-solid fa-list me-2 text-primary"></i>Select an Indicator
+      </div>
+      <div class="card-body p-0">
+        {% if indicators %}
+          <div class="input-group p-2 border-bottom">
+            <span class="input-group-text"><i class="fa-solid fa-search"></i></span>
+            <input type="text" id="indicatorSearch" class="form-control form-control-sm"
+                   placeholder="Filter indicators…" />
+          </div>
+          <ul class="list-group list-group-flush indicator-list" style="max-height:500px;overflow-y:auto">
+            {% for row in indicators %}
+            <li class="list-group-item list-group-item-action indicator-item d-flex align-items-center gap-2"
+                data-title="{{ row.title }}" data-country="{{ row.country }}"
+                onclick="loadIndicator(this)">
+              <span>{{ country_map[row.country]['flag'] if row.country in country_map else '🌐' }}</span>
+              <span class="flex-grow-1 small">{{ row.title }}</span>
+              <span class="badge bg-secondary">{{ row.cnt }}</span>
+            </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="text-center py-5 text-secondary px-3">
+            <i class="fa-solid fa-hourglass-half fa-2x mb-3"></i>
+            <p class="mb-1">No historical data yet.</p>
+            <p class="small">
+              As ForexFactory publishes actual values for past events,
+              they'll appear here automatically.
+              Try <strong>Refresh Data</strong> to fetch the latest.
+            </p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart + table panel -->
+  <div class="col-12 col-lg-8">
+    <div id="analysisPanel">
+      <!-- Placeholder until an indicator is chosen -->
+      <div class="card h-100 d-flex align-items-center justify-content-center text-center
+                  text-secondary py-5" id="analysisPlaceholder">
+        <i class="fa-solid fa-arrow-left fa-2x mb-3"></i>
+        <p>Select an indicator on the left to view its surprise analysis.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Analysis content template (hidden, cloned via JS) -->
+<template id="analysisTpl">
+  <div class="card mb-4" id="analysisHeader">
+    <div class="card-body">
+      <div class="d-flex align-items-center gap-3">
+        <div>
+          <h5 class="mb-0 fw-bold" id="anaTitle"></h5>
+          <small class="text-secondary" id="anaCountry"></small>
+        </div>
+        <div class="ms-auto text-center">
+          <div class="h4 mb-0" id="anaCorrValue">—</div>
+          <small class="text-secondary">Pearson r (surprise vs. SPX return)</small>
+        </div>
+        <div class="text-center">
+          <div class="h4 mb-0" id="anaSampleSize">—</div>
+          <small class="text-secondary">observations</small>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card mb-4">
+    <div class="card-header fw-semibold">
+      Surprise % vs. S&amp;P 500 Daily Return %
+    </div>
+    <div class="card-body">
+      <canvas id="scatterChart" height="220"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header fw-semibold">
+      Historical Releases
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Forecast</th>
+            <th>Actual</th>
+            <th>Surprise %</th>
+            <th>SPX Return %</th>
+          </tr>
+        </thead>
+        <tbody id="anaTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</template>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Indicator search filter ───────────────────────────────────
+const searchInput = document.getElementById('indicatorSearch');
+if (searchInput) {
+  searchInput.addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    document.querySelectorAll('.indicator-item').forEach(li => {
+      li.style.display = li.dataset.title.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+}
+
+// ── URL param pre-selection ───────────────────────────────────
+(function () {
+  const params = new URLSearchParams(location.search);
+  const ind = params.get('indicator');
+  const cty = params.get('country');
+  if (ind) {
+    const item = document.querySelector(
+      `.indicator-item[data-title="${ind}"]${cty ? `[data-country="${cty}"]` : ''}`
+    );
+    if (item) { item.click(); }
+  }
+})();
+
+// ── Load indicator data ───────────────────────────────────────
+let scatterChart = null;
+
+function loadIndicator(el) {
+  // Highlight selection
+  document.querySelectorAll('.indicator-item').forEach(li => li.classList.remove('active'));
+  el.classList.add('active');
+
+  const title   = el.dataset.title;
+  const country = el.dataset.country;
+
+  const panel = document.getElementById('analysisPanel');
+  panel.innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary"></div></div>';
+
+  fetch(`/api/analysis/${encodeURIComponent(title)}?country=${encodeURIComponent(country)}`)
+    .then(r => r.json())
+    .then(data => renderAnalysis(data, title, country))
+    .catch(err => {
+      panel.innerHTML = `<div class="alert alert-danger">Failed to load data: ${err}</div>`;
+    });
+}
+
+function renderAnalysis(data, title, country) {
+  const panel = document.getElementById('analysisPanel');
+  const tpl   = document.getElementById('analysisTpl');
+  const clone = tpl.content.cloneNode(true);
+
+  // Header
+  clone.getElementById('anaTitle').textContent    = title;
+  clone.getElementById('anaCountry').textContent  = country;
+  clone.getElementById('anaSampleSize').textContent = data.sample_size ?? '0';
+
+  const corrEl = clone.getElementById('anaCorrValue');
+  if (data.correlation !== null && data.correlation !== undefined) {
+    corrEl.textContent = data.correlation.toFixed(3);
+    corrEl.className   = 'h4 mb-0 ' + (
+      data.correlation >  0.3 ? 'text-success' :
+      data.correlation < -0.3 ? 'text-danger'  : 'text-warning'
+    );
+  } else {
+    corrEl.textContent = '—';
+    corrEl.className   = 'h4 mb-0 text-secondary';
+  }
+
+  // Scatter data
+  const paired = (data.data || []).filter(
+    d => d.surprise_pct !== null && d.sp500_return !== null
+  );
+  const scatterData = paired.map(d => ({ x: d.surprise_pct, y: d.sp500_return }));
+
+  // Tooltip labels for the scatter
+  const pointLabels = paired.map(d => d.date);
+
+  // Table
+  const tbody = clone.getElementById('anaTableBody');
+  const sorted = [...(data.data || [])].sort((a, b) => b.date.localeCompare(a.date));
+  sorted.forEach(d => {
+    const tr = document.createElement('tr');
+    const surpriseClass = d.surprise_pct > 0 ? 'text-success' :
+                          d.surprise_pct < 0 ? 'text-danger'  : '';
+    const spxClass = d.sp500_return > 0 ? 'text-success' :
+                     d.sp500_return < 0 ? 'text-danger'  : '';
+    tr.innerHTML = `
+      <td>${d.date}</td>
+      <td>${d.forecast ?? '—'}</td>
+      <td><strong>${d.actual ?? '—'}</strong></td>
+      <td class="${surpriseClass}">${d.surprise_pct !== null ? (d.surprise_pct > 0 ? '+' : '') + d.surprise_pct.toFixed(2) + '%' : '—'}</td>
+      <td class="${spxClass}">${d.sp500_return !== null ? (d.sp500_return > 0 ? '+' : '') + d.sp500_return.toFixed(2) + '%' : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  panel.innerHTML = '';
+  panel.appendChild(clone);
+
+  // Destroy previous chart if any
+  if (scatterChart) { scatterChart.destroy(); scatterChart = null; }
+
+  // Draw scatter
+  const ctx = panel.querySelector('#scatterChart');
+  if (ctx && scatterData.length > 0) {
+    scatterChart = new Chart(ctx, {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: 'Surprise % vs SPX Return %',
+          data: scatterData,
+          pointBackgroundColor: scatterData.map(d =>
+            d.x > 0 && d.y > 0 ? '#22c55e' :
+            d.x < 0 && d.y < 0 ? '#ef4444' : '#f97316'
+          ),
+          pointRadius: 7,
+          pointHoverRadius: 9,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const date = pointLabels[ctx.dataIndex] ?? '';
+                return [
+                  `Date: ${date}`,
+                  `Surprise: ${ctx.parsed.x.toFixed(2)}%`,
+                  `SPX return: ${ctx.parsed.y.toFixed(2)}%`,
+                ];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            title: { display: true, text: 'Surprise % (actual − forecast) / |forecast|', color: '#9ca3af' },
+            ticks: { color: '#9ca3af' },
+            grid:  { color: 'rgba(255,255,255,0.05)' },
+          },
+          y: {
+            title: { display: true, text: 'S&P 500 Daily Return %', color: '#9ca3af' },
+            ticks: { color: '#9ca3af' },
+            grid:  { color: 'rgba(255,255,255,0.05)' },
+          },
+        },
+      },
+    });
+  } else if (ctx) {
+    ctx.closest('.card').querySelector('.card-body').innerHTML =
+      '<p class="text-secondary text-center py-4">Not enough data yet to plot. Check back as actuals accumulate.</p>';
+  }
+}
+</script>
+{% endblock %}

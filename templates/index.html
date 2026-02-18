@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — EconCal{% endblock %}
+
+{% block content %}
+
+<!-- ── Header row ─────────────────────────────────────────────── -->
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div>
+    <h1 class="h3 mb-0 fw-bold">Economic Calendar Dashboard</h1>
+    <small class="text-secondary">
+      US &bull; EU &bull; China &nbsp;|&nbsp;
+      {% if last_sync %}
+        Last updated: <span id="lastSyncTime">{{ last_sync.strftime('%b %d, %Y %H:%M UTC') }}</span>
+      {% else %}
+        <span class="text-warning">Data loading…</span>
+      {% endif %}
+    </small>
+  </div>
+</div>
+
+<!-- ── Stats bar ──────────────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card stat-card border-danger">
+      <div class="card-body py-3">
+        <div class="stat-value text-danger">{{ high_count }}</div>
+        <div class="stat-label">High-impact this week</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card stat-card border-warning">
+      <div class="card-body py-3">
+        <div class="stat-value text-warning">{{ medium_count }}</div>
+        <div class="stat-label">Medium-impact this week</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card stat-card border-info">
+      <div class="card-body py-3">
+        <div class="stat-value text-info">{{ all_week_count }}</div>
+        <div class="stat-label">Total events this week</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card stat-card border-success">
+      <div class="card-body py-3">
+        <div class="stat-value text-success">{{ today_events | length }}</div>
+        <div class="stat-label">Today's events</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main two-column layout ─────────────────────────────────── -->
+<div class="row g-4">
+
+  <!-- Upcoming events (left column) -->
+  <div class="col-12 col-xl-7">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span class="fw-semibold">
+          <i class="fa-solid fa-calendar-check me-2 text-danger"></i>
+          Upcoming High-Impact Events (next 30 days)
+        </span>
+        <div class="d-flex gap-2">
+          <span class="badge bg-primary" title="United States">🇺🇸 USD</span>
+          <span class="badge bg-success" title="European Union">🇪🇺 EUR</span>
+          <span class="badge bg-danger" title="China">🇨🇳 CNY</span>
+        </div>
+      </div>
+      <div class="card-body p-0" style="max-height:600px;overflow-y:auto">
+        {% if upcoming %}
+          {% set current_date = namespace(val=None) %}
+          {% for event in upcoming %}
+            {% set ev_date = event.event_date.date() %}
+            {% if ev_date != current_date.val %}
+              {% set current_date.val = ev_date %}
+              <div class="event-date-header px-3 py-2
+                   {% if ev_date == today %}bg-primary bg-opacity-25{% endif %}">
+                {{ ev_date.strftime('%A, %B %d, %Y') }}
+                {% if ev_date == today %}
+                  <span class="badge bg-primary ms-2">Today</span>
+                {% endif %}
+              </div>
+            {% endif %}
+            <div class="event-row px-3 py-2 d-flex align-items-center gap-3
+                 {% if event.impact == 'High' %}event-high
+                 {% elif event.impact == 'Medium' %}event-medium
+                 {% else %}event-low{% endif %}">
+              <!-- Time -->
+              <span class="event-time text-secondary">
+                {{ event.event_date.strftime('%H:%M') }} UTC
+              </span>
+              <!-- Flag + title -->
+              <span class="flex-grow-1">
+                <span class="me-1">{{ country_map[event.country]['flag'] }}</span>
+                <span class="fw-semibold">{{ event.title }}</span>
+              </span>
+              <!-- Forecast / Previous -->
+              <span class="text-secondary small text-nowrap">
+                {% if event.forecast %}F: {{ event.forecast }}{% endif %}
+                {% if event.previous %}&nbsp;&bull;&nbsp;P: {{ event.previous }}{% endif %}
+              </span>
+              <!-- Impact badge -->
+              <span class="badge impact-badge impact-{{ event.impact | lower }}">
+                {{ event.impact }}
+              </span>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="text-center py-5 text-secondary">
+            <i class="fa-solid fa-circle-info fa-2x mb-3"></i>
+            <p>No upcoming high-impact events found.<br>
+               Try clicking <strong>Refresh Data</strong> in the navbar.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- S&P 500 chart (right column) -->
+  <div class="col-12 col-xl-5">
+    <div class="card">
+      <div class="card-header fw-semibold">
+        <i class="fa-solid fa-arrow-trend-up me-2 text-success"></i>
+        S&amp;P 500 — Last 90 Days
+      </div>
+      <div class="card-body">
+        <canvas id="spChart" height="250"></canvas>
+      </div>
+    </div>
+
+    <!-- Today's events highlight -->
+    {% if today_events %}
+    <div class="card mt-4 border-warning">
+      <div class="card-header fw-semibold text-warning">
+        <i class="fa-solid fa-bell me-2"></i>Today's Events
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for event in today_events %}
+        <li class="list-group-item bg-transparent d-flex align-items-center gap-3">
+          <span>{{ country_map[event.country]['flag'] }}</span>
+          <span class="flex-grow-1 fw-semibold">{{ event.title }}</span>
+          {% if event.actual %}
+            <span class="text-success fw-bold">A: {{ event.actual }}</span>
+          {% elif event.forecast %}
+            <span class="text-secondary">F: {{ event.forecast }}</span>
+          {% endif %}
+          <span class="badge impact-{{ event.impact | lower }}">{{ event.impact }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Quick market context -->
+    {% if market_rows %}
+    {% set last_row = market_rows[-1] %}
+    <div class="card mt-4">
+      <div class="card-header fw-semibold">
+        <i class="fa-solid fa-info-circle me-2 text-info"></i>
+        Latest S&amp;P 500 Close
+      </div>
+      <div class="card-body">
+        <div class="row text-center">
+          <div class="col">
+            <div class="h4 mb-0">{{ '{:,.2f}'.format(last_row.close) }}</div>
+            <small class="text-secondary">{{ last_row.date.strftime('%b %d') }}</small>
+          </div>
+          <div class="col">
+            {% if last_row.pct_change is not none %}
+              <div class="h4 mb-0
+                {% if last_row.pct_change >= 0 %}text-success{% else %}text-danger{% endif %}">
+                {% if last_row.pct_change >= 0 %}+{% endif %}{{ '{:.2f}'.format(last_row.pct_change) }}%
+              </div>
+              <small class="text-secondary">Daily change</small>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div><!-- /row -->
+
+<!-- ── Legend ────────────────────────────────────────────────── -->
+<div class="mt-4 d-flex gap-4 flex-wrap">
+  <small class="text-secondary"><span class="legend-dot bg-danger"></span> High impact</small>
+  <small class="text-secondary"><span class="legend-dot bg-warning"></span> Medium impact</small>
+  <small class="text-secondary"><span class="legend-dot bg-secondary"></span> Low impact</small>
+  <small class="text-secondary ms-3">
+    <i class="fa-solid fa-circle-info fa-xs me-1"></i>
+    Times shown in UTC. High-impact events are most likely to affect S&amp;P moves.
+  </small>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  // ── Build S&P chart from server-side data ──────────────────
+  const rows = {{ market_rows_json | tojson }};
+  const labels = rows.map(r => r.date);
+  const closes = rows.map(r => r.close);
+  const changes = rows.map(r => r.pct_change);
+
+  // Mark high-impact event dates
+  const eventDates = new Set(
+    {{ upcoming | map(attribute='event_date') | map('string') | list | tojson }}
+      .map(s => s.slice(0, 10))
+  );
+
+  const pointColors = closes.map((_, i) =>
+    eventDates.has(labels[i]) ? '#ef4444' : 'transparent'
+  );
+  const pointRadius = closes.map((_, i) =>
+    eventDates.has(labels[i]) ? 6 : 0
+  );
+
+  const ctx = document.getElementById('spChart');
+  if (ctx) {
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'S&P 500 Close',
+            data: closes,
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59,130,246,0.08)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.3,
+            pointRadius,
+            pointBackgroundColor: pointColors,
+            pointBorderColor: pointColors,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              afterBody: (items) => {
+                const date = items[0].label;
+                if (eventDates.has(date)) return ['⚠ High-impact event day'];
+                return [];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { maxTicksLimit: 10, color: '#9ca3af' },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+          },
+          y: {
+            ticks: { color: '#9ca3af' },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+          },
+        },
+      },
+    });
+  }
+})();
+</script>
+{% endblock %}
