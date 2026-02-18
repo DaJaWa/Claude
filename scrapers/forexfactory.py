@@ -1,77 +1,73 @@
 """
-ForexFactory economic calendar scraper.
+Economic calendar scraper — Investing.com backend.
 
-Uses the unofficial JSON feed at nfs.faireconomy.media which mirrors
-ForexFactory calendar data as structured JSON. No API key required.
+Fetches the economic calendar from Investing.com's internal AJAX endpoint.
+No API key required.  The response is a JSON envelope whose ``data`` field
+contains an HTML fragment; we parse that with BeautifulSoup.
 
-All timestamps in the feed are Eastern Time (ET); we convert to UTC before
-storing in the database.
+Timezone note: we request timeZone=55 (UTC) so all times are stored as UTC.
 """
 
 import hashlib
 import logging
 import re
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-ET = ZoneInfo("America/New_York")
+# ---------------------------------------------------------------------------
+# Investing.com AJAX endpoint
+# ---------------------------------------------------------------------------
 
-IMPACT_MAP = {
-    "High": "High",
-    "Medium": "Medium",
-    "Low": "Low",
-    "Holiday": None,        # skip holidays
-    "Non-Economic": None,   # skip
+IC_URL = (
+    "https://www.investing.com/economic-calendar/"
+    "Service/getCalendarFilteredData"
+)
+
+IC_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": "https://www.investing.com/economic-calendar/",
+    "Origin": "https://www.investing.com",
+}
+
+# Investing.com country IDs we care about
+COUNTRY_IDS = {
+    "5":  "USD",   # United States
+    "72": "EUR",   # Euro Zone
+    "37": "CNY",   # China
+}
+
+# Span title → our currency code (fallback lookup from page text)
+TITLE_TO_CURRENCY = {
+    "United States": "USD",
+    "Euro Zone":     "EUR",
+    "China":         "CNY",
 }
 
 TRACKED_CURRENCIES = {"USD", "EUR", "CNY"}
 
-FF_ENDPOINTS = {
-    "this_week":  "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-    "next_week":  "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-    "this_month": "https://nfs.faireconomy.media/ff_calendar_thismonth.json",
-    "next_month": "https://nfs.faireconomy.media/ff_calendar_nextmonth.json",
-}
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; EconomicCalendarTracker/1.0; "
-        "+https://github.com/economic-tracker)"
-    ),
-    "Accept": "application/json",
+# data-img_key on the sentiment <td>
+IMPACT_MAP = {
+    "bull3": "High",
+    "bull2": "Medium",
+    "bull1": "Low",
 }
 
 
-def _parse_date(date_str: str) -> datetime | None:
-    """
-    Parse a ForexFactory date string into a UTC-aware datetime.
-
-    Expected formats:
-      - "Feb 07 2025 8:30am"   (datetime with time, 12-hour, ET)
-      - "Feb 07 2025"          (all-day event, assumed 00:00 ET)
-    """
-    if not date_str:
-        return None
-
-    date_str = date_str.strip()
-
-    # Normalise am/pm to uppercase so strptime works cross-platform
-    date_str = re.sub(r"(am|pm)$", lambda m: m.group().upper(), date_str, flags=re.IGNORECASE)
-
-    for fmt in ("%b %d %Y %I:%M%p", "%b %d %Y %I%p", "%b %d %Y"):
-        try:
-            naive = datetime.strptime(date_str, fmt)
-            return naive.replace(tzinfo=ET).astimezone(ZoneInfo("UTC"))
-        except ValueError:
-            continue
-
-    logger.warning("Could not parse date string: %r", date_str)
-    return None
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _event_id(country: str, title: str, date_str: str) -> str:
     """Stable deduplication key for an event."""
@@ -79,77 +75,172 @@ def _event_id(country: str, title: str, date_str: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def fetch_raw(period: str = "this_week") -> list[dict]:
-    """Fetch raw JSON for a calendar period. Returns [] on failure."""
-    url = FF_ENDPOINTS.get(period)
-    if not url:
-        logger.error("Unknown period: %s", period)
-        return []
+# ---------------------------------------------------------------------------
+# Fetch + parse
+# ---------------------------------------------------------------------------
+
+def fetch_raw_html(tab: str = "this_week") -> str:
+    """
+    POST to Investing.com AJAX endpoint for one calendar tab.
+    Returns the HTML fragment string, or '' on failure.
+    """
+    payload = {
+        "country[]": list(COUNTRY_IDS.keys()),
+        "importance[]": ["3", "2", "1"],
+        "timeZone": "55",          # UTC
+        "timeFilter": "timeOnly",
+        "currentTab": tab,
+        "submitFilters": "1",
+        "limit_from": "0",
+    }
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = requests.post(IC_URL, headers=IC_HEADERS, data=payload, timeout=25)
         resp.raise_for_status()
-        return resp.json()
+        json_resp = resp.json()
+        return json_resp.get("data", "")
     except Exception as exc:
-        logger.error("Failed to fetch %s (%s): %s", period, url, exc)
+        logger.error("Investing.com fetch failed (tab=%s): %s", tab, exc)
+        return ""
+
+
+def parse_events_from_html(html: str) -> list[dict]:
+    """
+    Parse the Investing.com calendar HTML fragment into our event schema.
+
+    The fragment contains a mix of:
+      - ``<tr class="theDay">`` rows  — carry the current date
+      - ``<tr class="js-event-item">`` rows — one per economic event
+    """
+    if not html:
         return []
 
+    soup = BeautifulSoup(html, "html.parser")
+    events: list[dict] = []
+    current_date = None
 
-def parse_events(raw: list[dict]) -> list[dict]:
-    """Filter and normalise raw ForexFactory JSON into our schema."""
-    out = []
-    for item in raw:
-        country = (item.get("country") or "").upper()
-        if country not in TRACKED_CURRENCIES:
+    for row in soup.find_all("tr"):
+        classes = row.get("class", [])
+
+        # ── date-header row ──────────────────────────────────────────────
+        if "theDay" in classes:
+            span = row.find("span", class_="fleft")
+            if span:
+                raw = span.get_text(strip=True)
+                for fmt in ("%A, %B %d, %Y", "%A, %b %d, %Y"):
+                    try:
+                        current_date = datetime.strptime(raw, fmt).date()
+                        break
+                    except ValueError:
+                        pass
             continue
 
-        raw_impact = item.get("impact", "Low")
-        impact = IMPACT_MAP.get(raw_impact)
-        if impact is None:
-            continue  # holiday / non-economic
-
-        date_str = item.get("date", "")
-        event_date = _parse_date(date_str)
-        if not event_date:
+        # ── event row ────────────────────────────────────────────────────
+        if "js-event-item" not in classes:
+            continue
+        if current_date is None:
             continue
 
-        title = (item.get("title") or "").strip()
+        # --- currency ---------------------------------------------------
+        flag_td = row.find("td", class_="flagCur")
+        currency = None
+        if flag_td:
+            span = flag_td.find("span", title=True)
+            if span:
+                currency = TITLE_TO_CURRENCY.get(span["title"])
+            if not currency:
+                # fall back to the text "USD" / "EUR" / "CNY" in the cell
+                txt = flag_td.get_text(strip=True)
+                if txt in TRACKED_CURRENCIES:
+                    currency = txt
+        if currency not in TRACKED_CURRENCIES:
+            continue
+
+        # --- impact -----------------------------------------------------
+        sent_td = row.find("td", class_="sentiment")
+        impact = "Low"
+        if sent_td:
+            img_key = sent_td.get("data-img_key", "")
+            impact = IMPACT_MAP.get(img_key, "Low")
+
+        # --- event title ------------------------------------------------
+        event_td = row.find("td", class_="event")
+        title = ""
+        if event_td:
+            a = event_td.find("a")
+            title = (a or event_td).get_text(strip=True)
         if not title:
             continue
 
-        out.append(
+        # --- time -------------------------------------------------------
+        time_td = row.find("td", class_="js-time") or row.find("td", class_="time")
+        h, m = 0, 0
+        if time_td:
+            t = time_td.get_text(strip=True)
+            match = re.match(r"^(\d{1,2}):(\d{2})$", t)
+            if match:
+                h, m = int(match.group(1)), int(match.group(2))
+
+        event_dt = datetime(
+            current_date.year, current_date.month, current_date.day,
+            h, m, tzinfo=timezone.utc,
+        )
+
+        # --- actual / forecast / previous --------------------------------
+        def _cell(css_class: str) -> str | None:
+            td = row.find("td", class_=css_class)
+            if td:
+                val = td.get_text(strip=True)
+                return val if val else None
+            return None
+
+        actual   = _cell("act")
+        forecast = _cell("fore")
+        previous = _cell("prev")
+
+        date_str = event_dt.isoformat()
+        events.append(
             {
-                "event_id": _event_id(country, title, date_str),
-                "title": title,
-                "country": country,
-                "event_date": event_date,
-                "impact": impact,
-                "forecast": (item.get("forecast") or "").strip() or None,
-                "previous": (item.get("previous") or "").strip() or None,
-                "actual": (item.get("actual") or "").strip() or None,
+                "event_id":   _event_id(currency, title, date_str),
+                "title":      title,
+                "country":    currency,
+                "event_date": event_dt,
+                "impact":     impact,
+                "forecast":   forecast,
+                "previous":   previous,
+                "actual":     actual,
             }
         )
-    return out
 
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Public sync entry-point (called by app.py)
+# ---------------------------------------------------------------------------
 
 def sync(db, EconomicEvent) -> tuple[int, int]:
     """
     Fetch events for this month + next month, upsert into the DB.
-
     Returns (new_count, updated_count).
     """
-    raw: list[dict] = []
-    for period in ("this_month", "next_month"):
-        raw.extend(fetch_raw(period))
+    all_events: list[dict] = []
+    seen_ids: set[str] = set()
 
-    events = parse_events(raw)
+    for tab in ("this_month", "next_month"):
+        html = fetch_raw_html(tab)
+        parsed = parse_events_from_html(html)
+        logger.info("Tab %s: parsed %d events from HTML", tab, len(parsed))
+        for ev in parsed:
+            if ev["event_id"] not in seen_ids:
+                seen_ids.add(ev["event_id"])
+                all_events.append(ev)
 
     new_count = 0
     updated_count = 0
 
-    for ev in events:
+    for ev in all_events:
         existing = EconomicEvent.query.filter_by(event_id=ev["event_id"]).first()
         if existing:
-            # Only update forecast/previous/actual if we have new info
             changed = False
             for field in ("forecast", "previous", "actual"):
                 if ev[field] and not getattr(existing, field):
@@ -162,5 +253,7 @@ def sync(db, EconomicEvent) -> tuple[int, int]:
             new_count += 1
 
     db.session.commit()
-    logger.info("ForexFactory sync complete: +%d new, %d updated", new_count, updated_count)
+    logger.info(
+        "Investing.com sync complete: +%d new, %d updated", new_count, updated_count
+    )
     return new_count, updated_count

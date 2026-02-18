@@ -22,15 +22,6 @@ class Config:
         "CNY": {"name": "China", "flag": "🇨🇳", "region": "CN"},
     }
 
-    # ForexFactory unofficial JSON endpoints (Eastern Time data)
-    FF_BASE = "https://nfs.faireconomy.media"
-    FF_ENDPOINTS = {
-        "this_week": "/ff_calendar_thisweek.json",
-        "next_week": "/ff_calendar_nextweek.json",
-        "this_month": "/ff_calendar_thismonth.json",
-        "next_month": "/ff_calendar_nextmonth.json",
-    }
-
     # Optional: FRED API key for richer historical US data
     FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 
