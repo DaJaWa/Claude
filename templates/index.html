@@ -203,7 +203,7 @@
 <script>
 (function () {
   // ── Build S&P chart from server-side data ──────────────────
-  const rows = {{ market_rows | map(attribute='to_dict') | list | tojson }};
+  const rows = {{ market_rows_json | tojson }};
   const labels = rows.map(r => r.date);
   const closes = rows.map(r => r.close);
   const changes = rows.map(r => r.pct_change);

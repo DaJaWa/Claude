@@ -129,6 +129,7 @@ def index():
     ]
 
     market_rows = MarketData.get_recent(days=90)
+    market_rows_json = [r.to_dict() for r in market_rows]
     last_sync = _last_sync_time()
 
     # Stats for all upcoming events regardless of impact (next 7 days)
@@ -142,6 +143,7 @@ def index():
         today_events=today_events,
         week_events=week_events,
         market_rows=market_rows,
+        market_rows_json=market_rows_json,
         last_sync=last_sync,
         country_map=Config.COUNTRY_MAP,
         impact_colors=IMPACT_COLORS,
