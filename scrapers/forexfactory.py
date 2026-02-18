@@ -1,29 +1,33 @@
 """
-Economic calendar scraper — ForexFactory JSON + Myfxbook fallback.
+Economic calendar scraper — ForexFactory JSON + FXStreet fallback.
 
-Primary source: ForexFactory CDN JSON feeds (thisweek / nextweek)
-  https://nfs.faireconomy.media/ff_calendar_{period}.json
+Primary:  ForexFactory CDN (thisweek only — the only valid period on the CDN)
+          https://nfs.faireconomy.media/ff_calendar_thisweek.json
+          Field note: currency is in the "country" key, not "currency".
 
-Fallback / extended range: Myfxbook Economic Calendar API
-  https://www.myfxbook.com/services/forex-economic-calendar-api/getEconomicCalendar.json
+Extended: FXStreet Economic Calendar API (date-range, no key required)
+          https://calendar.fxstreet.com/eventdate/
 
-No API key required for either source.
+Both sources fail gracefully. Events are deduplicated before upsert.
 """
 
 import hashlib
 import logging
 import re
+import calendar
 from datetime import datetime, timezone, timedelta
 
 import requests
 
 logger = logging.getLogger(__name__)
 
+TRACKED_CURRENCIES = {"USD", "EUR", "CNY"}
+
 # ---------------------------------------------------------------------------
-# ForexFactory CDN (weekly feeds)
+# ForexFactory CDN  — weekly JSON feed
 # ---------------------------------------------------------------------------
 
-FF_BASE_URL = "https://nfs.faireconomy.media/ff_calendar_{period}.json"
+FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 FF_HEADERS = {
     "User-Agent": (
@@ -31,34 +35,8 @@ FF_HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/121.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "application/json, */*",
 }
-
-# ---------------------------------------------------------------------------
-# Myfxbook Economic Calendar API (date-range, covers months)
-# ---------------------------------------------------------------------------
-
-MYFXBOOK_URL = (
-    "https://www.myfxbook.com/services/forex-economic-calendar-api/"
-    "getEconomicCalendar.json"
-)
-
-MYFXBOOK_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/121.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-    "Referer": "https://www.myfxbook.com/forex-economic-calendar",
-}
-
-# ---------------------------------------------------------------------------
-# Shared constants
-# ---------------------------------------------------------------------------
-
-TRACKED_CURRENCIES = {"USD", "EUR", "CNY"}
 
 FF_IMPACT_MAP = {
     "High":         "High",
@@ -68,13 +46,43 @@ FF_IMPACT_MAP = {
     "Non-Economic": "Low",
 }
 
-# Myfxbook returns numeric strings: "3"=High, "2"=Medium, "1"=Low, "0"=Holiday
-MYFXBOOK_IMPACT_MAP = {
-    "3": "High",
-    "2": "Medium",
-    "1": "Low",
-    "0": "Low",
+# ---------------------------------------------------------------------------
+# FXStreet Economic Calendar API  — date-range JSON
+# ---------------------------------------------------------------------------
+
+FXSTREET_URL = "https://calendar.fxstreet.com/eventdate/"
+
+FXSTREET_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.fxstreet.com/economic-calendar",
 }
+
+# FXStreet volatility value → our impact label
+FXSTREET_IMPACT_MAP = {
+    "High":   "High",
+    "Medium": "Medium",
+    "Low":    "Low",
+    "None":   "Low",
+    "0":      "Low",
+    "1":      "Low",
+    "2":      "Medium",
+    "3":      "High",
+}
+
+# FXStreet currency-code field name variants seen in the wild
+_FXS_CURRENCY_KEYS = ("CurrencyCode", "Currency", "currency", "country")
+# FXStreet event-name field name variants
+_FXS_NAME_KEYS = ("Name", "EventName", "name", "title", "Title")
+# FXStreet date field name variants (UTC)
+_FXS_DATE_KEYS = ("DateUtc", "Date", "date", "EventDate")
+# FXStreet volatility/impact field name variants
+_FXS_IMPACT_KEYS = ("VolatilityString", "Volatility", "volatility", "impact")
 
 
 # ---------------------------------------------------------------------------
@@ -82,36 +90,22 @@ MYFXBOOK_IMPACT_MAP = {
 # ---------------------------------------------------------------------------
 
 def _event_id(country: str, title: str, date_str: str) -> str:
-    """Stable deduplication key for an event."""
     raw = f"{country}|{title}|{date_str}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _parse_dt_iso(date_str: str) -> datetime | None:
-    """Parse ISO-8601 date string (ForexFactory format) to UTC datetime."""
+def _parse_dt(date_str: str) -> datetime | None:
+    """Parse ISO-8601 or 'YYYY-MM-DD HH:MM' date string → UTC datetime."""
     if not date_str:
         return None
+    # ISO 8601 with offset, e.g. "2026-02-18T13:30:00-0500" or "…Z"
+    cleaned = date_str.replace("Z", "+00:00")
     try:
-        dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S%z")
+        dt = datetime.fromisoformat(cleaned)
         return dt.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
     except ValueError:
         pass
-    # Fallback: strip offset, assume UTC
-    m = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", date_str)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            pass
-    return None
-
-
-def _parse_dt_myfxbook(date_str: str) -> datetime | None:
-    """Parse Myfxbook date string 'YYYY-MM-DD HH:MM' (UTC) to UTC datetime."""
-    if not date_str:
-        return None
+    # Space-separated UTC, e.g. "2026-02-18 13:30"
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
             return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
@@ -125,23 +119,38 @@ def _clean(val) -> str | None:
     return v if v else None
 
 
+def _first_value(d: dict, keys) -> str:
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            return str(v)
+    return ""
+
+
 # ---------------------------------------------------------------------------
-# ForexFactory JSON fetcher
+# ForexFactory fetcher
 # ---------------------------------------------------------------------------
 
-def _fetch_forexfactory(period: str) -> list[dict]:
-    url = FF_BASE_URL.format(period=period)
+def _fetch_forexfactory() -> list[dict]:
     try:
-        resp = requests.get(url, headers=FF_HEADERS, timeout=25)
+        resp = requests.get(FF_URL, headers=FF_HEADERS, timeout=25)
         resp.raise_for_status()
-        raw_events = resp.json()
+        raw = resp.json()
     except Exception as exc:
-        logger.error("ForexFactory fetch failed (period=%s): %s", period, exc)
+        logger.error("ForexFactory fetch failed: %s", exc)
         return []
 
+    if not isinstance(raw, list):
+        logger.error("ForexFactory: unexpected response type %s", type(raw))
+        return []
+
+    if raw:
+        logger.debug("ForexFactory sample keys: %s", list(raw[0].keys()))
+
     events: list[dict] = []
-    for item in raw_events:
-        currency = item.get("currency", "")
+    for item in raw:
+        # FF CDN uses "country" for the currency code (not "currency")
+        currency = item.get("country") or item.get("currency") or ""
         if currency not in TRACKED_CURRENCIES:
             continue
 
@@ -150,7 +159,7 @@ def _fetch_forexfactory(period: str) -> list[dict]:
         if not title:
             continue
 
-        event_dt = _parse_dt_iso(item.get("date", ""))
+        event_dt = _parse_dt(item.get("date", ""))
         if event_dt is None:
             continue
 
@@ -166,44 +175,50 @@ def _fetch_forexfactory(period: str) -> list[dict]:
             "actual":     _clean(item.get("actual")),
         })
 
-    logger.info("ForexFactory period=%s: parsed %d events", period, len(events))
+    logger.info("ForexFactory thisweek: parsed %d events", len(events))
     return events
 
 
 # ---------------------------------------------------------------------------
-# Myfxbook JSON fetcher (date-range)
+# FXStreet fetcher
 # ---------------------------------------------------------------------------
 
-def _fetch_myfxbook(start_dt: datetime, end_dt: datetime) -> list[dict]:
+def _fetch_fxstreet(start_dt: datetime, end_dt: datetime) -> list[dict]:
     params = {
-        "start": start_dt.strftime("%Y-%m-%d %H:%M"),
-        "end":   end_dt.strftime("%Y-%m-%d %H:%M"),
+        "culture":  "en-US",
+        "dateFrom": start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "dateTo":   end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "volatility": "0,1,2,3",
     }
     try:
-        resp = requests.get(
-            MYFXBOOK_URL, headers=MYFXBOOK_HEADERS, params=params, timeout=25
-        )
+        resp = requests.get(FXSTREET_URL, headers=FXSTREET_HEADERS, params=params, timeout=30)
         resp.raise_for_status()
-        raw_events = resp.json()
+        raw = resp.json()
     except Exception as exc:
-        logger.error("Myfxbook fetch failed (%s – %s): %s", params["start"], params["end"], exc)
+        logger.error("FXStreet fetch failed: %s", exc)
         return []
 
+    if not isinstance(raw, list):
+        logger.error("FXStreet: unexpected response type %s", type(raw))
+        return []
+
+    if raw:
+        logger.debug("FXStreet sample keys: %s", list(raw[0].keys()))
+
     events: list[dict] = []
-    for item in raw_events:
-        currency = item.get("currency", "") or item.get("country", "")
+    for item in raw:
+        currency = _first_value(item, _FXS_CURRENCY_KEYS)
         if currency not in TRACKED_CURRENCIES:
             continue
 
-        impact_raw = str(item.get("impact", "1"))
-        impact = MYFXBOOK_IMPACT_MAP.get(impact_raw, "Low")
+        impact_raw = _first_value(item, _FXS_IMPACT_KEYS)
+        impact = FXSTREET_IMPACT_MAP.get(impact_raw, "Low")
 
-        title = _clean(item.get("name") or item.get("title"))
+        title = _clean(_first_value(item, _FXS_NAME_KEYS))
         if not title:
             continue
 
-        date_raw = item.get("date", "")
-        event_dt = _parse_dt_myfxbook(date_raw) or _parse_dt_iso(date_raw)
+        event_dt = _parse_dt(_first_value(item, _FXS_DATE_KEYS))
         if event_dt is None:
             continue
 
@@ -214,49 +229,43 @@ def _fetch_myfxbook(start_dt: datetime, end_dt: datetime) -> list[dict]:
             "country":    currency,
             "event_date": event_dt,
             "impact":     impact,
-            "forecast":   _clean(item.get("forecast")),
-            "previous":   _clean(item.get("previous")),
-            "actual":     _clean(item.get("actual")),
+            "forecast":   _clean(item.get("Forecast") or item.get("forecast")),
+            "previous":   _clean(item.get("Previous") or item.get("previous")),
+            "actual":     _clean(item.get("Actual") or item.get("actual")),
         })
 
-    logger.info("Myfxbook: parsed %d events (%s – %s)", len(events), params["start"], params["end"])
+    logger.info("FXStreet: parsed %d events", len(events))
     return events
 
 
 # ---------------------------------------------------------------------------
-# Public sync entry-point (called by app.py)
+# Public sync entry-point
 # ---------------------------------------------------------------------------
 
 def sync(db, EconomicEvent) -> tuple[int, int]:
     """
-    Fetch events for this week + next week (ForexFactory JSON),
-    then extend with Myfxbook for broader date coverage.
+    Fetch events from ForexFactory (this week) + FXStreet (this+next month).
     Returns (new_count, updated_count).
     """
     all_events: list[dict] = []
     seen_ids: set[str] = set()
 
-    # ── ForexFactory weekly feeds ─────────────────────────────────────────
-    ff_ok = False
-    for period in ("thisweek", "nextweek"):
-        for ev in _fetch_forexfactory(period):
-            if ev["event_id"] not in seen_ids:
-                seen_ids.add(ev["event_id"])
-                all_events.append(ev)
-                ff_ok = True
+    # ── ForexFactory: current week ────────────────────────────────────────
+    for ev in _fetch_forexfactory():
+        if ev["event_id"] not in seen_ids:
+            seen_ids.add(ev["event_id"])
+            all_events.append(ev)
 
-    # ── Myfxbook date-range (covers this month + next month) ─────────────
+    # ── FXStreet: this month + next month ─────────────────────────────────
     now = datetime.now(timezone.utc)
-    # Start of current month, end of next month
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if now.month == 12:
-        end = now.replace(year=now.year + 1, month=1, day=31, hour=23, minute=59)
-    else:
-        import calendar
-        last_day = calendar.monthrange(now.year, now.month + 1)[1]
-        end = now.replace(month=now.month + 1, day=last_day, hour=23, minute=59)
+    next_month = now.month % 12 + 1
+    next_year  = now.year + (1 if now.month == 12 else 0)
+    last_day   = calendar.monthrange(next_year, next_month)[1]
+    end = now.replace(year=next_year, month=next_month, day=last_day,
+                      hour=23, minute=59, second=59, microsecond=0)
 
-    for ev in _fetch_myfxbook(start, end):
+    for ev in _fetch_fxstreet(start, end):
         if ev["event_id"] not in seen_ids:
             seen_ids.add(ev["event_id"])
             all_events.append(ev)
